@@ -49,18 +49,10 @@ async def compile_daily_log(log_path: Path, state: dict) -> float:
     schema = AGENTS_FILE.read_text(encoding="utf-8")
     wiki_index = read_wiki_index()
 
-    # Read existing articles for context
-    existing_articles_context = ""
-    existing = {}
-    for article_path in list_wiki_articles():
-        rel = article_path.relative_to(KNOWLEDGE_DIR)
-        existing[str(rel)] = article_path.read_text(encoding="utf-8")
-
-    if existing:
-        parts = []
-        for rel_path, content in existing.items():
-            parts.append(f"### {rel_path}\n```markdown\n{content}\n```")
-        existing_articles_context = "\n\n".join(parts)
+    # NOTE: existing articles are deliberately NOT inlined into the prompt —
+    # with 100+ articles that made every compile read the whole KB (cost grew
+    # linearly with KB size). The agent has Read/Glob/Grep and reads only the
+    # articles it actually needs, guided by the index.
 
     timestamp = now_iso()
 
@@ -75,9 +67,9 @@ and extract knowledge into structured wiki articles.
 
 {wiki_index}
 
-## Existing Wiki Articles
-
-{existing_articles_context if existing_articles_context else "(No existing articles yet)"}
+Existing articles live under {KNOWLEDGE_DIR}. They are not inlined here —
+use the index above to see what already exists, and Read an article from disk
+before updating it or linking to it.
 
 ## Daily Log to Compile
 
@@ -92,6 +84,7 @@ Read the daily log above and compile it into wiki articles following the schema 
 ### Rules:
 
 1. **Extract key concepts** - Identify 3-7 distinct concepts worth their own article
+   - Check the wiki index first: if a concept already has an article, update it instead of creating a duplicate
 2. **Create concept articles** in `knowledge/concepts/` - One .md file per concept
    - Use the exact article format from AGENTS.md (YAML frontmatter + sections)
    - Include `sources:` in frontmatter pointing to the daily log file
@@ -100,8 +93,9 @@ Read the daily log above and compile it into wiki articles following the schema 
 3. **Create connection articles** in `knowledge/connections/` if this log reveals non-obvious
    relationships between 2+ existing concepts
 4. **Update existing articles** if this log adds new information to concepts already in the wiki
-   - Read the existing article, add the new information, add the source to frontmatter
-5. **Update knowledge/index.md** - Add new entries to the table
+   - Read the existing article from disk first, add the new information, add the source to frontmatter
+   - Also refresh the article's row in knowledge/index.md: sources and Updated date
+5. **Update knowledge/index.md** - Add new entries to the table, refresh rows of updated articles
    - Each entry: `| [[path/slug]] | One-line summary | source-file | {timestamp[:10]} |`
 6. **Append to knowledge/log.md** - Add a timestamped entry:
    ```
@@ -214,6 +208,13 @@ def main():
         cost = asyncio.run(compile_daily_log(log_path, state))
         total_cost += cost
         print(f"  Done.")
+
+    # Deterministic index sync: the agent is asked to maintain index.md, but
+    # forgets dates/rows — fix the table from the filesystem after every run.
+    from reindex import sync_index
+
+    s = sync_index()
+    print(f"index.md sync: refreshed={s['refreshed']} added={s['added']} dropped={s['dropped']}")
 
     articles = list_wiki_articles()
     print(f"\nCompilation complete. Total cost: ${total_cost:.2f}")
