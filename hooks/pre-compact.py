@@ -39,10 +39,22 @@ MAX_TURNS = 30
 MAX_CONTEXT_CHARS = 15_000
 MIN_TURNS_TO_FLUSH = 5
 
+# Entry types written only by the interactive UI. Headless runs
+# (`claude -p`: prof cards/reviewers, SDK calls) never produce them.
+INTERACTIVE_MARKERS = {"mode", "permission-mode", "ai-title"}
 
-def extract_conversation_context(transcript_path: Path) -> tuple[str, int]:
-    """Read JSONL transcript and extract last ~N conversation turns as markdown."""
+
+def extract_conversation_context(transcript_path: Path) -> tuple[str, int, bool]:
+    """Read JSONL transcript and extract last ~N conversation turns as markdown.
+
+    Returns (context, turn_count, is_interactive). A session counts as
+    interactive if the transcript contains UI-only entry types, or (fallback,
+    in case a future Claude Code version drops those markers) at least two
+    plain-text user messages.
+    """
     turns: list[str] = []
+    interactive = False
+    user_text_messages = 0
 
     with open(transcript_path, encoding="utf-8") as f:
         for line in f:
@@ -53,6 +65,9 @@ def extract_conversation_context(transcript_path: Path) -> tuple[str, int]:
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
+
+            if entry.get("type") in INTERACTIVE_MARKERS:
+                interactive = True
 
             msg = entry.get("message", {})
             if isinstance(msg, dict):
@@ -77,6 +92,11 @@ def extract_conversation_context(transcript_path: Path) -> tuple[str, int]:
             if isinstance(content, str) and content.strip():
                 label = "User" if role == "user" else "Assistant"
                 turns.append(f"**{label}:** {content.strip()}\n")
+                if role == "user" and not content.strip().startswith("<"):
+                    user_text_messages += 1
+
+    if user_text_messages >= 2:
+        interactive = True
 
     recent = turns[-MAX_TURNS:]
     context = "\n".join(recent)
@@ -87,7 +107,7 @@ def extract_conversation_context(transcript_path: Path) -> tuple[str, int]:
         if boundary > 0:
             context = context[boundary + 1 :]
 
-    return context, len(recent)
+    return context, len(recent), interactive
 
 
 def main() -> None:
@@ -120,9 +140,13 @@ def main() -> None:
 
     # Extract conversation context in the hook
     try:
-        context, turn_count = extract_conversation_context(transcript_path)
+        context, turn_count, interactive = extract_conversation_context(transcript_path)
     except Exception as e:
         logging.error("Context extraction failed: %s", e)
+        return
+
+    if not interactive:
+        logging.info("SKIP: headless/automated session %s", session_id)
         return
 
     if not context.strip():

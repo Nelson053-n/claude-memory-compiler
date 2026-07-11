@@ -225,15 +225,12 @@ def main():
     # Run the LLM extraction
     response = asyncio.run(run_flush(context))
 
-    # Append to daily log
+    # Append to daily log (FLUSH_OK / FLUSH_ERROR go to flush.log only,
+    # otherwise they pollute the daily log and get paid for at compile time)
     if "FLUSH_OK" in response:
         logging.info("Result: FLUSH_OK")
-        append_to_daily_log(
-            "FLUSH_OK - Nothing worth saving from this session", "Memory Flush"
-        )
     elif "FLUSH_ERROR" in response:
         logging.error("Result: %s", response)
-        append_to_daily_log(response, "Memory Flush")
     else:
         logging.info("Result: saved to daily log (%d chars)", len(response))
         append_to_daily_log(response, "Session")
